@@ -24,6 +24,7 @@ const (
 	FrameMarkerV8       = 0x8
 	FrameMarkerDotnet   = 0xa
 	FrameMarkerGo       = 0xb
+	FrameMarkerBEAM     = 0xc
 	FrameMarkerAbort    = 0xff
 )
 
@@ -38,6 +39,7 @@ const (
 	ProgUnwindV8      = 0x7
 	ProgUnwindDotnet  = 0x8
 	ProgGoLabels      = 0x9
+	ProgUnwindBEAM    = 0xa
 )
 
 const (
@@ -89,7 +91,7 @@ const (
 	TraceOriginUnknown  = 0x0
 	TraceOriginSampling = 0x1
 	TraceOriginOffCPU   = 0x2
-	TraceOriginUProbe   = 0x3
+	TraceOriginProbe    = 0x3
 )
 
 type ApmSpanID [8]byte
@@ -177,6 +179,15 @@ type UnwindInfo struct {
 
 type ApmIntProcInfo struct {
 	Offset uint64
+}
+type BEAMProcInfo struct {
+	Bias                   uint64
+	R                      uint64
+	The_active_code_index  uint64
+	Beam_normal_exit       uint64
+	Frame_pointers_enabled bool
+	Ranges_sizeof          uint8
+	Pad_cgo_0              [6]byte
 }
 type DotnetProcInfo struct {
 	Version uint32

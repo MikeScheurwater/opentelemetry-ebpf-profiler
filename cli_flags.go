@@ -75,7 +75,7 @@ var (
 		"If specified, only processes matching these patterns will be profiled (allowlist mode). " +
 		"Patterns are matched against the process executable path."
 	probeLinkHelper = "Attach a probe to a symbol of an executable. " +
-		"Expected format: /path/to/executable:symbol"
+		"Expected format: probe_type:target[:symbol]. probe_type can be kprobe, kretprobe, uprobe, or uretprobe."
 	loadProbeHelper = "Load generic eBPF program that can be attached externally to " +
 		"various user or kernel space hooks."
 )
@@ -139,8 +139,8 @@ func parseArgs() (*controller.Config, error) {
 
 	fs.StringVar(&args.ProfileProcesses, "profile-processes", "", profileProcessesHelp)
 
-	fs.Func("uprobe-link", probeLinkHelper, func(link string) error {
-		args.UProbeLinks = append(args.UProbeLinks, link)
+	fs.Func("probe-link", probeLinkHelper, func(link string) error {
+		args.ProbeLinks = append(args.ProbeLinks, link)
 		return nil
 	})
 

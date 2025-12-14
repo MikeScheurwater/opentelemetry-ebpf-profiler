@@ -152,10 +152,10 @@ type Config struct {
 	// IncludeEnvVars holds a list of environment variables that should be captured and reported
 	// from processes
 	IncludeEnvVars libpf.Set[string]
-	// UProbes holds a list of executable:symbol elements to which
-	// a uprobe will be attached.
-	UProbeLinks []string
-	// LoadProbe inidicates whether the generic eBPF program should be loaded
+	// Probes holds a list of probe_type:target[:symbol] elements to which
+	// a probe will be attached.
+	ProbeLinks []string
+	// LoadProbe indicates whether the generic eBPF program should be loaded
 	// without being attached to something.
 	LoadProbe bool
 	// ProfileProcessPatterns is an allowlist of process name patterns to profile.
@@ -225,7 +225,7 @@ func NewTracer(ctx context.Context, cfg *Config) (*Tracer, error) {
 	hasBatchOperations := ebpfHandler.SupportsGenericBatchOperations()
 
 	processManager, err := pm.New(ctx, cfg.IncludeTracers, cfg.Intervals.MonitorInterval(),
-		ebpfHandler, nil, cfg.TraceReporter, cfg.ExecutableReporter,
+		ebpfHandler, cfg.TraceReporter, cfg.ExecutableReporter,
 		elfunwindinfo.NewStackDeltaProvider(),
 		cfg.FilterErrorFrames, cfg.IncludeEnvVars,
 		cfg.ProfileProcessPatterns)
@@ -289,7 +289,7 @@ func initializeMapsAndPrograms(kmod *kallsyms.Module, cfg *Config) (
 	// does not load them into the kernel.
 	// A collection specification holds the information about eBPF programs and maps.
 	// References to eBPF maps in the eBPF programs are just placeholders that need to be
-	// replaced by the actual loaded maps later on with RewriteMaps before loading the
+	// replaced by the actual loaded maps later on with rewriteMaps before loading the
 	// programs into the kernel.
 	major, minor, patch, err := GetCurrentKernelVersion()
 	if err != nil {
@@ -325,8 +325,7 @@ func initializeMapsAndPrograms(kmod *kallsyms.Module, cfg *Config) (
 
 	// Replace the place holders for map access in the eBPF programs with
 	// the file descriptors of the loaded maps.
-	//nolint:staticcheck
-	if err = coll.RewriteMaps(ebpfMaps); err != nil {
+	if err = rewriteMaps(coll, ebpfMaps); err != nil {
 		return nil, nil, fmt.Errorf("failed to rewrite maps: %v", err)
 	}
 
@@ -396,6 +395,11 @@ func initializeMapsAndPrograms(kmod *kallsyms.Module, cfg *Config) (
 			name:   "go_labels",
 			enable: cfg.IncludeTracers.Has(types.Labels),
 		},
+		{
+			progID: uint32(support.ProgUnwindBEAM),
+			name:   "unwind_beam",
+			enable: cfg.IncludeTracers.Has(types.BEAMTracer),
+		},
 	}
 
 	if err = loadPerfUnwinders(coll, ebpfProgs, ebpfMaps["perf_progs"], tailCallProgs,
@@ -403,7 +407,7 @@ func initializeMapsAndPrograms(kmod *kallsyms.Module, cfg *Config) (
 		return nil, nil, fmt.Errorf("failed to load perf eBPF programs: %v", err)
 	}
 
-	if cfg.OffCPUThreshold > 0 || len(cfg.UProbeLinks) > 0 || cfg.LoadProbe {
+	if cfg.OffCPUThreshold > 0 || len(cfg.ProbeLinks) > 0 || cfg.LoadProbe {
 		// Load the tail call destinations if any kind of event profiling is enabled.
 		if err = loadProbeUnwinders(coll, ebpfProgs, ebpfMaps["kprobe_progs"], tailCallProgs,
 			cfg.BPFVerifierLogLevel, ebpfMaps["perf_progs"].FD()); err != nil {
@@ -430,15 +434,15 @@ func initializeMapsAndPrograms(kmod *kallsyms.Module, cfg *Config) (
 		}
 	}
 
-	if len(cfg.UProbeLinks) > 0 || cfg.LoadProbe {
-		uprobeProgs := []progLoaderHelper{
+	if len(cfg.ProbeLinks) > 0 || cfg.LoadProbe {
+		probeProgs := []progLoaderHelper{
 			{
-				name:             "uprobe__generic",
+				name:             genericProgName,
 				noTailCallTarget: true,
 				enable:           true,
 			},
 		}
-		if err = loadProbeUnwinders(coll, ebpfProgs, ebpfMaps["kprobe_progs"], uprobeProgs,
+		if err = loadProbeUnwinders(coll, ebpfProgs, ebpfMaps["kprobe_progs"], probeProgs,
 			cfg.BPFVerifierLogLevel, ebpfMaps["perf_progs"].FD()); err != nil {
 			return nil, nil, fmt.Errorf("failed to load uprobe eBPF programs: %v", err)
 		}
@@ -461,6 +465,47 @@ func removeTemporaryMaps(ebpfMaps map[string]*cebpf.Map) error {
 		}
 		delete(ebpfMaps, mapName)
 	}
+	return nil
+}
+
+// rewriteMaps replaces all references to named eBPF maps.
+// This means that pre-existing maps are used, instead of new ones created
+// when calling NewCollection. Any named eBPF maps are removed from CollectionSpec.Maps.
+//
+// This function used to be part of cilium/ebpf before it got deprecated and finally removed.
+// As we require to resize maps in loadAllMaps() we still need this functionality.
+// cilium/ebpf deprecated this function as FDs from *cebpf.Map are taken, but no references to
+// the Map entries are kept. If no one else holds a reference to these Map entries, they can
+// get GCd, the FD closed and the program load fails.
+//
+// Returns an error if a named eBPF map isn't used in at least one program.
+func rewriteMaps(coll *cebpf.CollectionSpec, maps map[string]*cebpf.Map) error {
+	for symbol, m := range maps {
+		// have we seen a program that uses this symbol / map
+		seen := false
+		for progName, progSpec := range coll.Programs {
+			err := progSpec.Instructions.AssociateMap(symbol, m)
+
+			switch {
+			case err == nil:
+				seen = true
+
+			case errors.Is(err, asm.ErrUnreferencedSymbol):
+				// Not all programs need to use the map
+
+			default:
+				return fmt.Errorf("program %s: %w", progName, err)
+			}
+		}
+
+		if !seen {
+			return fmt.Errorf("map %s not referenced by any programs", symbol)
+		}
+
+		// Prevent NewCollection from creating rewritten maps
+		delete(coll.Maps, symbol)
+	}
+
 	return nil
 }
 
@@ -720,7 +765,7 @@ func (t *Tracer) readKernelFrames(kstackID int32) (libpf.Frames, error) {
 
 		kmod, err := t.kernelSymbolizer.GetModuleByAddress(address)
 		if err == nil {
-			frame.MappingFile = kmod.MappingFile()
+			frame.Mapping = kmod.Mapping()
 			frame.AddressOrLineno -= libpf.AddressOrLineno(kmod.Start())
 
 			if funcName, _, err := kmod.LookupSymbolByAddress(address); err == nil {
@@ -901,7 +946,7 @@ func (t *Tracer) loadBpfTrace(raw []byte, cpu int) *host.Trace {
 	switch trace.Origin {
 	case support.TraceOriginSampling:
 	case support.TraceOriginOffCPU:
-	case support.TraceOriginUProbe:
+	case support.TraceOriginProbe:
 	default:
 		log.Warnf("Skip handling trace from unexpected %d origin", trace.Origin)
 		return nil
@@ -1140,23 +1185,24 @@ func (t *Tracer) StartOffCPUProfiling() error {
 	return nil
 }
 
-func (t *Tracer) AttachUProbes(uprobes []string) error {
-	uProbeProg, ok := t.ebpfProgs["uprobe__generic"]
-	if !ok {
-		return errors.New("uprobe__generic is not available")
-	}
-	for _, uprobeStr := range uprobes {
-		split := strings.SplitN(uprobeStr, ":", 2)
+func (t *Tracer) AttachProbes(probes []string) error {
+	for _, probeStr := range probes {
+		probeSpec, err := ParseProbe(probeStr)
+		if err != nil {
+			return err
+		}
 
-		exec, err := link.OpenExecutable(split[0])
+		uProbeProg, ok := t.ebpfProgs[probeSpec.ProgName]
+		if !ok {
+			return fmt.Errorf("%s is not available", probeSpec.ProgName)
+		}
+
+		probeLink, err := AttachProbe(uProbeProg, probeSpec)
 		if err != nil {
 			return err
 		}
-		uprobeLink, err := exec.Uprobe(split[1], uProbeProg, nil)
-		if err != nil {
-			return err
-		}
-		t.hooks[hookPoint{group: "uprobe", name: uprobeStr}] = uprobeLink
+
+		t.hooks[hookPoint{group: probeSpec.Type.String(), name: probeStr}] = probeLink
 	}
 	return nil
 }

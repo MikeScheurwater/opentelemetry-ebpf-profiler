@@ -335,6 +335,7 @@ typedef enum TracePrograms {
   PROG_UNWIND_V8,
   PROG_UNWIND_DOTNET,
   PROG_GO_LABELS,
+  PROG_UNWIND_BEAM,
   NUM_TRACER_PROGS,
 } TracePrograms;
 
@@ -344,7 +345,7 @@ typedef enum TraceOrigin {
   TRACE_UNKNOWN,
   TRACE_SAMPLING,
   TRACE_OFF_CPU,
-  TRACE_UPROBE,
+  TRACE_PROBE,
 } TraceOrigin;
 
 // MAX_FRAME_UNWINDS defines the maximum number of frames per
@@ -391,8 +392,17 @@ _Static_assert(sizeof(Frame) == 3 * 8, "frame padding not working as expected");
 
 // TSDInfo contains data needed to extract Thread Specific Data (TSD) values
 typedef struct TSDInfo {
+  // Offset is the pointer difference from "tpbase" pointer to the C-library
+  // specific struct pthread's member containing the thread specific data:
+  // .tsd (musl) or .specific (glibc).
+  // Note: on x86_64 it's positive value, and arm64 it is negative value as
+  // "tpbase" register has different purpose and pointer value per platform ABI.
   s16 offset;
+  // Multiplier is the TSD specific value array element size.
+  // Typically 8 bytes on 64bit musl and 16 bytes on 64bit glibc
   u8 multiplier;
+  // Indirect is a flag indicating if the "tpbase + Offset" points to a member
+  // which is a pointer the array (musl) and not the array itself (glibc).
   u8 indirect;
 } TSDInfo;
 
@@ -504,6 +514,17 @@ typedef struct V8ProcInfo {
   u8 codekind_shift, codekind_mask, codekind_baseline;
 } V8ProcInfo;
 
+// BEAMProcInfo is a container for the data needed to build a stack trace for a BEAM process.
+typedef struct BEAMProcInfo {
+  u64 bias;
+  u64 r;
+  u64 the_active_code_index;
+  u64 beam_normal_exit;
+  bool frame_pointers_enabled;
+  // Introspection Struct Offsets
+  u8 ranges_sizeof;
+} BEAMProcInfo;
+
 // COMM_LEN defines the maximum length we will receive for the comm of a task.
 #define COMM_LEN 16
 
@@ -607,7 +628,7 @@ typedef struct UnwindState {
   u64 rax, r9, r11, r13, r15;
 #elif defined(__aarch64__)
   // Current register values for named registers
-  u64 lr, r22, r28;
+  u64 lr, r20, r22, r28;
 #endif
 
   // The executable ID/hash associated with PC
