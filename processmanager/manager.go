@@ -60,7 +60,9 @@ var (
 func New(ctx context.Context, includeTracers types.IncludedTracers, monitorInterval time.Duration,
 	ebpf pmebpf.EbpfHandler, traceReporter reporter.TraceReporter,
 	exeReporter reporter.ExecutableReporter, sdp nativeunwind.StackDeltaProvider,
-	filterErrorFrames bool, includeEnvVars libpf.Set[string]) (*ProcessManager, error) {
+	filterErrorFrames bool, includeEnvVars libpf.Set[string],
+	profileProcessPatterns []string,
+	) (*ProcessManager, error) {
 	if exeReporter == nil {
 		exeReporter = executableReporterStub{}
 	}
@@ -99,6 +101,7 @@ func New(ctx context.Context, includeTracers types.IncludedTracers, monitorInter
 		metricsAddSlice:          metrics.AddSlice,
 		filterErrorFrames:        filterErrorFrames,
 		includeEnvVars:           includeEnvVars,
+		profileProcessPatterns:   profileProcessPatterns,
 	}
 
 	collectInterpreterMetrics(ctx, pm, monitorInterval)
